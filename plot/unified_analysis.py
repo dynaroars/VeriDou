@@ -27,11 +27,11 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-# Import from existing visualization script
-try:
-    from utils.network.create_onnx_veridou import create_motion_blur_kernel_range
-except ImportError:
-    print("Warning: Could not import create_motion_blur_kernel_range. Some functionality may be limited.")
+# # Import from existing visualization script
+# try:
+#     from utils.network.create_onnx_veridou import create_motion_blur_kernel_range
+# except ImportError:
+#     print("Warning: Could not import create_motion_blur_kernel_range. Some functionality may be limited.")
 
 
 def create_default_stats():
