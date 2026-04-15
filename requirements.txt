@@ -1,0 +1,8 @@
+matplotlib
+numpy
+onnx
+onnxruntime
+torch
+beartype
+tqdm
+opencv-python
