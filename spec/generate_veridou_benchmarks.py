@@ -6,11 +6,11 @@ import argparse
 from typing import List
 import numpy as np
 
-from utils.network.create_onnx_aaai import create_motion_blur_kernel
+from utils.network.create_onnx_independent import create_motion_blur_kernel
 from utils.spec.write_vnnlib import write_vnnlib
 from utils.spec.objective import parse_vnnlib
 
-from utils.network.create_onnx_new import create_onnx
+from utils.network.create_onnx_veridou import create_onnx
 from utils.network.read_onnx import parse_onnx, inference_onnx
 
 

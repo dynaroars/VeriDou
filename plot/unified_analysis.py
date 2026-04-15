@@ -20,7 +20,7 @@ import torch
 import torchvision.transforms as transforms
 from pathlib import Path
 from typing import Optional, Tuple, List
-from utils.network.create_onnx_new import create_motion_blur_kernel_range
+from utils.network.create_onnx_veridou import create_motion_blur_kernel_range
 from collections import defaultdict
 import argparse
 import warnings
@@ -29,7 +29,7 @@ warnings.filterwarnings("ignore")
 
 # Import from existing visualization script
 try:
-    from utils.network.create_onnx_new import create_motion_blur_kernel_range
+    from utils.network.create_onnx_veridou import create_motion_blur_kernel_range
 except ImportError:
     print("Warning: Could not import create_motion_blur_kernel_range. Some functionality may be limited.")
 
@@ -436,7 +436,7 @@ def apply_kernel_convolution(
 ) -> torch.Tensor:
     """
     Apply convolution with the extracted kernel using R*C perturbation.
-    Following the pattern from create_onnx_new.py: F(X) = z @ A.T + B
+    Following the pattern from create_onnx_veridou.py: F(X) = z @ A.T + B
     where A maps z inputs to conv outputs and B is the identity convolution.
     Additional perturbation values are added on top of the perturbed input.
 
@@ -532,7 +532,7 @@ def apply_single_z_convolution(
 ) -> torch.Tensor:
     """
     Apply convolution with a single z value.
-    Following the pattern from create_onnx_new.py: F(X) = z * A + B
+    Following the pattern from create_onnx_veridou.py: F(X) = z * A + B
     where A is the convolution result of a unit kernel and B is the identity convolution.
 
     Args:

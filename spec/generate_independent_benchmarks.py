@@ -7,7 +7,7 @@ import argparse
 from utils.spec.write_vnnlib import write_vnnlib
 from utils.spec.objective import parse_vnnlib
 
-from utils.network.create_onnx_aaai import create_onnx
+from utils.network.create_onnx_independent import create_onnx
 from utils.network.read_onnx import parse_onnx, inference_onnx
 
 

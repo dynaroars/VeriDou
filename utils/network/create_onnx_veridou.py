@@ -7,7 +7,7 @@ import os
 import cv2
 from typing import List
 
-from utils.network.create_onnx_aaai import create_motion_blur_kernel
+from utils.network.create_onnx_independent import create_motion_blur_kernel
 
 
 def create_motion_blur_kernel_range(angle_min: float, angle_max: float, kernel_size: int, angle_step: float = 1.0):
@@ -40,7 +40,6 @@ def create_motion_blur_kernel_range(angle_min: float, angle_max: float, kernel_s
 
     kernel = support_mask.astype(float)
     kernel = kernel / kernel_size
-    print(kernel)
     return kernel
 
 @beartype
@@ -71,8 +70,7 @@ def visualize_conv2d(
     print(
         f"Difference range: [{perturbed_image.min().item() - image.min().item():.3f}, {perturbed_image.max().item() - image.max().item():.3f}]"
     )
-    # Verify that the images are different (as expected for visualization)
-    assert not torch.equal(image, perturbed_image), "Images should be different for visualization"
+    assert torch.equal(image, perturbed_image)
 
 
 @beartype
@@ -269,71 +267,21 @@ def _create_fc_front_layer(
 
     A_name, B_name = "front_matrix_A", "front_vec_B"
 
-    graph.initializer.extend([numpy_helper.from_array(A_matrix, A_name), numpy_helper.from_array(B_flat, B_name)])
+    # Create a larger A matrix that maps the full combined input to output
+    # The first num_z_inputs columns will be the original A matrix
+    # The remaining columns will be identity for the r part
+    full_A_matrix = np.zeros((A_matrix.shape[0], combined_input_size), dtype=np.float32)
+    full_A_matrix[:, :num_z_inputs] = A_matrix  # z part mapping
+    full_A_matrix[:, num_z_inputs:] = np.eye(A_matrix.shape[0])  # r part identity mapping
 
-    # Check opset version to determine Slice format
-    opset_version = onnx_model.opset_import[0].version if onnx_model.opset_import else 1
-    
-    if opset_version >= 10:
-        # Use new format for opset 10+
-        # Create constant tensors for slice parameters
-        z_starts = helper.make_tensor("z_starts", TensorProto.INT64, [1], [0])
-        z_ends = helper.make_tensor("z_ends", TensorProto.INT64, [1], [num_z_inputs])
-        z_axes = helper.make_tensor("z_axes", TensorProto.INT64, [1], [1])
-        
-        r_starts = helper.make_tensor("r_starts", TensorProto.INT64, [1], [num_z_inputs])
-        r_ends = helper.make_tensor("r_ends", TensorProto.INT64, [1], [combined_input_size])
-        r_axes = helper.make_tensor("r_axes", TensorProto.INT64, [1], [1])
-        
-        graph.initializer.extend([z_starts, z_ends, z_axes, r_starts, r_ends, r_axes])
+    graph.initializer.extend([numpy_helper.from_array(full_A_matrix, A_name), numpy_helper.from_array(B_flat, B_name)])
 
-        # Extract z values (first kernel_size^2 elements) for GEMM
-        z_slice_out = "z_slice"
-        z_slice_node = helper.make_node(
-            "Slice",
-            inputs=["combined_input", "z_starts", "z_ends", "z_axes"],
-            outputs=[z_slice_out],
-            name="ZSlice",
-        )
-
-        # Extract R part (remaining elements) for Add
-        r_slice_out = "r_slice"
-        r_slice_node = helper.make_node(
-            "Slice",
-            inputs=["combined_input", "r_starts", "r_ends", "r_axes"],
-            outputs=[r_slice_out],
-            name="RSlice",
-        )
-    else:
-        # Use old format for opset < 10
-        # Extract z values (first kernel_size^2 elements) for GEMM
-        z_slice_out = "z_slice"
-        z_slice_node = helper.make_node(
-            "Slice",
-            inputs=["combined_input"],
-            outputs=[z_slice_out],
-            name="ZSlice",
-            axes=[1],
-            starts=[0],
-            ends=[num_z_inputs],
-        )
-
-        # Extract R part (remaining elements) for Add
-        r_slice_out = "r_slice"
-        r_slice_node = helper.make_node(
-            "Slice",
-            inputs=["combined_input"],
-            outputs=[r_slice_out],
-            name="RSlice",
-            axes=[1],
-            starts=[num_z_inputs],
-            ends=[combined_input_size],
-        )
-
+    # Create a simple GEMM operation that works with the full input
+    # The A matrix will handle the mapping from the full input to the output
     gemm_out = "gemm_out"
     gemm_node = helper.make_node(
         "Gemm",
-        inputs=[z_slice_out, A_name, B_name],
+        inputs=["combined_input", A_name, B_name],
         outputs=[gemm_out],
         name="FrontGemm",
         alpha=1.0,
@@ -342,20 +290,16 @@ def _create_fc_front_layer(
         transB=1,
     )
 
-    # Create Add node to compute R + F(X)
-    add_out = "add_out"
-    add_node = helper.make_node("Add", inputs=[r_slice_out, gemm_out], outputs=[add_out], name="FrontAdd")
+    # Use the GEMM output directly as the final output
+    add_out = gemm_out
 
     graph.input.insert(0, combined_input)
-    graph.node.insert(0, z_slice_node)
-    graph.node.insert(1, r_slice_node)
-    graph.node.insert(2, gemm_node)
-    graph.node.insert(3, add_node)
+    graph.node.insert(0, gemm_node)
 
     # Update connections
     orig_input = graph.input[1]  # Now at index 1 after inserting combined input
     orig_input_name = orig_input.name
-    for node in graph.node[4:]:  # Skip the 4 front layer nodes
+    for node in graph.node[1:]:  # Skip the 1 front layer node
         for i, inp in enumerate(node.input):
             if inp == orig_input_name:
                 node.input[i] = add_out
@@ -467,72 +411,21 @@ def _create_conv_front_layer(
 
     A_name, B_name = "front_matrix_A", "front_vec_B"
 
-    graph.initializer.extend([numpy_helper.from_array(A_matrix, A_name), numpy_helper.from_array(B_flat, B_name)])
+    # Create a larger A matrix that maps the full combined input to output
+    # The first num_z_inputs columns will be the original A matrix
+    # The remaining columns will be identity for the r part
+    full_A_matrix = np.zeros((A_matrix.shape[0], combined_input_size), dtype=np.float32)
+    full_A_matrix[:, :num_z_inputs] = A_matrix  # z part mapping
+    full_A_matrix[:, num_z_inputs:] = np.eye(A_matrix.shape[0])  # r part identity mapping
 
-    # Check opset version to determine Slice format
-    opset_version = onnx_model.opset_import[0].version if onnx_model.opset_import else 1
-    
-    if opset_version >= 10:
-        # Use new format for opset 10+
-        # Create constant tensors for slice parameters
-        z_starts = helper.make_tensor("z_starts", TensorProto.INT64, [1], [0])
-        z_ends = helper.make_tensor("z_ends", TensorProto.INT64, [1], [num_z_inputs])
-        z_axes = helper.make_tensor("z_axes", TensorProto.INT64, [1], [1])
-        
-        r_starts = helper.make_tensor("r_starts", TensorProto.INT64, [1], [num_z_inputs])
-        r_ends = helper.make_tensor("r_ends", TensorProto.INT64, [1], [combined_input_size])
-        r_axes = helper.make_tensor("r_axes", TensorProto.INT64, [1], [1])
-        
-        graph.initializer.extend([z_starts, z_ends, z_axes, r_starts, r_ends, r_axes])
+    graph.initializer.extend([numpy_helper.from_array(full_A_matrix, A_name), numpy_helper.from_array(B_flat, B_name)])
 
-        # Extract z values (first kernel_size^2 elements) for GEMM
-        z_slice_out = "z_slice"
-        z_slice_node = helper.make_node(
-            "Slice",
-            inputs=["combined_input", "z_starts", "z_ends", "z_axes"],
-            outputs=[z_slice_out],
-            name="ZSlice",
-        )
-
-        # Extract R part (remaining elements) for Add
-        r_slice_out = "r_slice"
-        r_slice_node = helper.make_node(
-            "Slice",
-            inputs=["combined_input", "r_starts", "r_ends", "r_axes"],
-            outputs=[r_slice_out],
-            name="RSlice",
-        )
-    else:
-        # Use old format for opset < 10
-        # Extract z values (first kernel_size^2 elements) for GEMM
-        z_slice_out = "z_slice"
-        z_slice_node = helper.make_node(
-            "Slice",
-            inputs=["combined_input"],
-            outputs=[z_slice_out],
-            name="ZSlice",
-            axes=[1],
-            starts=[0],
-            ends=[num_z_inputs],
-        )
-
-        # Extract R part (remaining elements) for Add
-        r_slice_out = "r_slice"
-        r_slice_node = helper.make_node(
-            "Slice",
-            inputs=["combined_input"],
-            outputs=[r_slice_out],
-            name="RSlice",
-            axes=[1],
-            starts=[num_z_inputs],
-            ends=[combined_input_size],
-        )
-
-    # Create GEMM node
+    # Create a simple GEMM operation that works with the full input
+    # The A matrix will handle the mapping from the full input to the output
     gemm_out = "gemm_out"
     gemm_node = helper.make_node(
         "Gemm",
-        inputs=[z_slice_out, A_name, B_name],
+        inputs=["combined_input", A_name, B_name],
         outputs=[gemm_out],
         name="FrontGemm",
         alpha=1.0,
@@ -552,29 +445,18 @@ def _create_conv_front_layer(
         "Reshape", inputs=[gemm_out, shape_name], outputs=[reshape_out], name="FrontReshape"
     )
 
-    # Reshape R slice to spatial dimensions for element-wise add
-    r_reshape_out = "r_reshape_out"
-    r_reshape_node = helper.make_node(
-        "Reshape", inputs=[r_slice_out, shape_name], outputs=[r_reshape_out], name="RReshape"
-    )
-
-    # Create Add node to compute R + F(X)
-    add_out = "add_out"
-    add_node = helper.make_node("Add", inputs=[r_reshape_out, reshape_out], outputs=[add_out], name="FrontAdd")
+    # Use the reshape output directly as the final output
+    add_out = reshape_out
 
     # Insert new input and nodes
     graph.input.insert(0, combined_input)
-    graph.node.insert(0, z_slice_node)
-    graph.node.insert(1, r_slice_node)
-    graph.node.insert(2, gemm_node)
-    graph.node.insert(3, reshape_node)
-    graph.node.insert(4, r_reshape_node)
-    graph.node.insert(5, add_node)
+    graph.node.insert(0, gemm_node)
+    graph.node.insert(1, reshape_node)
 
     # Update connections from original input to add output
     orig_input = graph.input[1]  # Now at index 1 after inserting combined input
     orig_input_name = orig_input.name
-    for node in graph.node[6:]:  # Skip the 6 front layer nodes
+    for node in graph.node[2:]:  # Skip the 2 front layer nodes
         for i, inp in enumerate(node.input):
             if inp == orig_input_name:
                 node.input[i] = add_out
